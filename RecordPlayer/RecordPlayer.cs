@@ -7,6 +7,11 @@ using System.Text.Json.Serialization;
 
 public class RecordPlayer : IDisposable
 {
+    private static readonly JsonSerializerOptions jsonSerializerOptions = new()
+    {
+        WriteIndented = true
+    };
+
     private readonly ILogger logger;
 
     private readonly Spotify.ApiClient spotifyClient;
@@ -18,7 +23,7 @@ public class RecordPlayer : IDisposable
 
     const string defaultMusicRecordConfigurationFilepath = "music-record-config.json";
     private readonly string musicRecordConfigurationFilepath;
-    private MusicRecordConfiguration musicRecordConfig;
+    private MusicRecordConfiguration? musicRecordConfig;
 
     public RecordPlayer(RecordPlayerGpioConfig gpioConfig, ILoggerFactory loggerFactory)
     {
@@ -81,15 +86,14 @@ public class RecordPlayer : IDisposable
 
         var playbackState = await spotifyClient.GetPlaybackState();
 
-        if (playbackState != null)
+        var devices = await spotifyClient.GetDevices();
+        if (devices == null || devices.Count == 0)
         {
-            var devices = await spotifyClient.GetDevices();
-            if (devices == null || devices.Count == 0)
-            {
-                logger.LogWarning("No playback devices are available.");
-                return false;
-            }
+            logger?.LogWarning("No playback devices are available.");
+            return false;
         }
+
+        logger.LogInformation($"Available devices:\n{string.Join("\n", devices.Select(d => $"- id: {d.Id}, name: {d.Name}, type: {d.Type}, active: {d.IsActive}"))}");
 
         IsPlaying = playbackState?.IsPlaying is true;
 
@@ -98,7 +102,7 @@ public class RecordPlayer : IDisposable
         if (IsPlaying is true)
         {
             currentTrack = playbackState.Item;
-            logger.LogInformation($"Playing: {currentTrack.Name} by {currentTrack.Artists.FirstOrDefault().Name}");
+            logger?.LogInformation($"Playing: {currentTrack.Name} by {currentTrack.Artists.FirstOrDefault().Name}");
         }
 
         // Step 3. Read configuration file containing music records
@@ -107,9 +111,12 @@ public class RecordPlayer : IDisposable
         {
             using var musicRecordConfigurationFile = File.OpenRead(musicRecordConfigurationFilepath);
             musicRecordConfig = await JsonSerializer.DeserializeAsync<MusicRecordConfiguration>(musicRecordConfigurationFile);
+            logger?.LogDebug($"Loaded {musicRecordConfig.Records.Count} music records from file '{musicRecordConfigurationFilepath}'.");
         }
         else
         {
+            logger?.LogWarning($"Music records config file '{musicRecordConfigurationFilepath}' does not exist.");
+
             musicRecordConfig = new();
         }
 
@@ -223,7 +230,7 @@ public class RecordPlayer : IDisposable
 
             try
             {
-                logger.LogInformation($"Read RFID tag with ID '{e.NfcId}'");
+                logger?.LogInformation($"Read RFID tag with ID '{e.NfcId}'");
 
                 // Step 3. Depending on if the player is on writing or reading mode do following:
                 // In writing mode, store currently playing track info to music record.
@@ -298,10 +305,10 @@ public class RecordPlayer : IDisposable
 
         musicRecordConfig.Records[record.NfcId] = record;
         using var musicRecordConfigurationFile = File.OpenWrite(musicRecordConfigurationFilepath);
-        await JsonSerializer.SerializeAsync(musicRecordConfigurationFile, musicRecordConfig);
+        await JsonSerializer.SerializeAsync(musicRecordConfigurationFile, musicRecordConfig, jsonSerializerOptions);
         musicRecordConfigurationFile.SetLength(musicRecordConfigurationFile.Position);
 
-        logger.LogInformation($"Saved '{currentTrack.Name}' by {currentTrack.Artists.FirstOrDefault().Name} with ID '{record.NfcId}'");
+        logger?.LogInformation($"Saved '{currentTrack.Name}' by {currentTrack.Artists.FirstOrDefault().Name} with ID '{record.NfcId}'");
 
         return record;
     }
@@ -310,8 +317,12 @@ public class RecordPlayer : IDisposable
     {
         if (await spotifyClient.Play(record.TrackUri, record.ContextUri))
         {
-            logger.LogInformation("Played record.");
+            logger?.LogInformation("Played record.");
             IsPlaying = true;
+        }
+        else
+        {
+            logger?.LogWarning($"Failed to play record with track URI '{record.TrackUri}' and context URI '{record.ContextUri}'.");
         }
     }
 
@@ -319,7 +330,7 @@ public class RecordPlayer : IDisposable
     {
         if (await spotifyClient.Resume())
         {
-            logger.LogInformation("Playback resumed.");
+            logger?.LogInformation("Playback resumed.");
             IsPlaying = true;
         }
     }
@@ -328,7 +339,7 @@ public class RecordPlayer : IDisposable
     {
         if (await spotifyClient.Pause())
         {
-            logger.LogInformation("Playback paused.");
+            logger?.LogInformation("Playback paused.");
             IsPlaying = false;
         }
     }
@@ -337,7 +348,7 @@ public class RecordPlayer : IDisposable
     {
         if (await spotifyClient.SkipToNext())
         {
-            logger.LogInformation("Skipped to next track.");
+            logger?.LogInformation("Skipped to next track.");
             IsPlaying = true;
         }
     }

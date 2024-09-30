@@ -13,6 +13,11 @@ namespace Spotify
 {
     public class ApiClient : IDisposable
     {
+        private static readonly JsonSerializerOptions jsonSerializerOptions = new()
+        {
+            WriteIndented = true
+        };
+
         const string defaultCredentialsFilepath = ".credentials";
         const string cacheFilepath = ".cache";
 
@@ -102,7 +107,7 @@ namespace Spotify
         public async Task SaveCache()
         {
             using var cacheFile = File.OpenWrite(cacheFilepath);
-            await JsonSerializer.SerializeAsync(cacheFile, Cache);
+            await JsonSerializer.SerializeAsync(cacheFile, Cache, jsonSerializerOptions);
             cacheFile.SetLength(cacheFile.Position);
         }
 
@@ -265,12 +270,21 @@ namespace Spotify
             var playerState = await response.Content.ReadFromJsonAsync<PlaybackState>();
             if (playerState is null) return null;
 
-            var deviceId = playerState.Device.Id;
+            var device = playerState.Device;
 
-            if (deviceId != Cache.DeviceId)
+            if (device.Id is not null)
             {
-                Cache.DeviceId = deviceId;
-                await SaveCache();
+                if (Cache.PreferredDeviceName is null)
+                {
+                    Cache.PreferredDeviceName = device.Name;
+                    Cache.DeviceId = device.Id;
+                    await SaveCache();
+                }
+                else if (Cache.PreferredDeviceName == device.Name && Cache.DeviceId != device.Id)
+                {
+                    Cache.DeviceId = device.Id;
+                    await SaveCache();
+                }
             }
 
             return playerState;
@@ -280,6 +294,15 @@ namespace Spotify
         {
             await RefreshAccessTokenIfExpired();
             var response = await apiHttpClient.GetFromJsonAsync<DevicesResponse>("me/player/devices");
+
+            var preferredDevice = response?.Devices?.FirstOrDefault(d => d.Name == Cache.PreferredDeviceName);
+
+            if (preferredDevice?.Id is not null && preferredDevice.Id != Cache.DeviceId)
+            {
+                Cache.DeviceId = preferredDevice.Id;
+                await SaveCache();
+            }
+
             return response?.Devices;
         }
 
@@ -330,6 +353,33 @@ namespace Spotify
             return results?.Albums.Items.FirstOrDefault();
         }
 
+        public async Task<bool> TransferPlaybackToPreferredDevice()
+        {
+            await RefreshAccessTokenIfExpired();
+
+            var url = "me/player";
+
+            var response = await apiHttpClient.PutAsJsonAsync(url, new TransferPlaybackRequest
+            {
+                DeviceIds = [Cache.DeviceId]
+            });
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var devices = await GetDevices();
+                if (devices != null && devices.Count != 0)
+                {
+                    response = await apiHttpClient.PutAsJsonAsync(url, new TransferPlaybackRequest
+                    {
+                        DeviceIds = [Cache.DeviceId]
+                    });
+                }
+            }
+
+            return await CheckForSuccessAndLogWarningOnError(response,
+                errorMessage: $"Failed to transfer playback to device '{Cache.DeviceId}' due to an error: {0}");
+        }
+
         public async Task<bool> Pause()
         {
             await RefreshAccessTokenIfExpired();
@@ -351,6 +401,11 @@ namespace Spotify
                 "device_id", Cache.DeviceId);
 
             var response = await apiHttpClient.PutAsync(url, null);
+
+            if (response.StatusCode == HttpStatusCode.NotFound && await TransferPlaybackToPreferredDevice())
+            {
+                response = await apiHttpClient.PutAsync(url, null);
+            }
 
             return await CheckForSuccessAndLogWarningOnError(response,
                 errorMessage: "Failed to resume playback due to an error: {0}");
@@ -482,22 +537,24 @@ namespace Spotify
         {
             if (response.IsSuccessStatusCode) return true;
 
+            Error? error;
+
             try
             {
-                var error = await response.Content.ReadFromJsonAsync<Error>();
-
-                if (error is not null)
-                {
-                    logger?.LogWarning(errorMessage, error.Message);
-                }
-                else
-                {
-                    logger?.LogWarning(errorMessage, response.StatusCode);
-                }
+                error = await response.Content.ReadFromJsonAsync<Error>();
             }
             catch
             {
+                error = null;
+            }
+
+            if (string.IsNullOrEmpty(error?.Message))
+            {
                 logger?.LogWarning(errorMessage, response.StatusCode);
+            }
+            else
+            {
+                logger?.LogWarning(errorMessage, error.Message);
             }
 
             return false;
@@ -535,6 +592,10 @@ namespace Spotify
         [JsonPropertyName("device_id")]
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public string? DeviceId { get; set; }
+
+        [JsonPropertyName("preferred_device_name")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? PreferredDeviceName { get; set; }
 
         [JsonPropertyName("refresh_token")]
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
