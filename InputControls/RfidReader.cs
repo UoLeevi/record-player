@@ -14,6 +14,9 @@ namespace InputControls
         private readonly MfRc522 mfrc522;
         private bool quit;
 
+        private readonly static TimeSpan pauseBetweenReading = TimeSpan.FromMilliseconds(250);
+        private readonly static TimeSpan activeReadingDuration = TimeSpan.FromMilliseconds(10);
+
         public RfidReader(int pinReset, int pinSS, int spiBusId, int spiChipSelectLine, GpioController? controller = null, ILoggerFactory? loggerFactory = null)
         {
             logger = loggerFactory?.CreateLogger<RfidReader>();
@@ -31,7 +34,7 @@ namespace InputControls
             thread = new(async () =>
             {
                 Data106kbpsTypeA card;
-                bool res;
+                bool isCardRead;
 
                 while (!quit)
                 {
@@ -39,19 +42,19 @@ namespace InputControls
 
                     while (!Enabled)
                     {
-                        Thread.Sleep(200);
+                        Thread.Sleep(pauseBetweenReading);
                     }
 
                     if (quit) break;
 
                     do
                     {
-                        res = mfrc522.ListenToCardIso14443TypeA(out card, TimeSpan.FromMilliseconds(500));
-                        Thread.Sleep(res ? 0 : 200);
+                        isCardRead = mfrc522.ListenToCardIso14443TypeA(out card, activeReadingDuration);
+                        if (!isCardRead) Thread.Sleep(pauseBetweenReading);
                     }
-                    while (!res && Enabled);
+                    while (!isCardRead && Enabled);
 
-                    if (res)
+                    if (isCardRead)
                     {
                         string nfcId = Convert.ToHexString(card.NfcId);
                         RfidTagReadEvent?.Invoke(this, new RfidTagReadEventArgs(nfcId));

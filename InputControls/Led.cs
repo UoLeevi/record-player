@@ -10,7 +10,7 @@ namespace InputControls
         private readonly GpioController controller;
         private readonly List<Action> cleanupActions = new();
 
-        private CancellationTokenSource blinkingCts;
+        private CancellationTokenSource? blinkingCts;
         private static readonly TimeSpan blinkOnDuration = TimeSpan.FromMilliseconds(200);
         private static readonly TimeSpan blinkOffDuration = TimeSpan.FromMilliseconds(500);
 
@@ -86,7 +86,7 @@ namespace InputControls
                     await Task.Delay(blinkOffDuration, blinkingCts.Token);
                 }
             }
-            catch (TaskCanceledException exception)
+            catch (TaskCanceledException)
             {
                 
             }
